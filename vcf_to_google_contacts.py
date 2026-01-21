@@ -24,44 +24,45 @@ class VCardParser:
         try:
             with open(self.vcf_file, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
-        except UnicodeDecodeError:
-            # Intentar con otras codificaciones comunes
-            with open(self.vcf_file, 'r', encoding='latin-1', errors='ignore') as f:
-                content = f.read()
+        except Exception as e:
+            print(f"Error crítico al leer el archivo: {e}")
+            return []
+
+        # Unir líneas continuadas que empiezan con espacio o tab en todo el archivo
+        content = re.sub(r'\r?\n[ \t]', '', content)
 
         # Dividir en vCards individuales
-        vcards = re.split(r'END:VCARD\s*', content)
+        vcards = content.split('END:VCARD')
 
-        for vcard in vcards:
-            if 'BEGIN:VCARD' not in vcard:
+        for vcard_text in vcards:
+            if 'BEGIN:VCARD' not in vcard_text:
                 continue
 
-            contact = self._parse_vcard(vcard)
+            contact = self._parse_vcard(vcard_text)
             if contact:
                 self.contacts.append(contact)
 
         return self.contacts
 
+    def _decode_value(self, value: str, params: List[str]) -> str:
+        """Decodifica un valor si está marcado como QUOTED-PRINTABLE."""
+        is_quoted = any('ENCODING=QUOTED-PRINTABLE' in p.upper() for p in params)
+
+        if is_quoted:
+            try:
+                import quopri
+                return quopri.decodestring(value).decode('utf-8', 'ignore')
+            except Exception:
+                return value
+
+        return value.replace('\\n', '\n').replace('\\,', ',').replace('\\;', ';').strip()
+
     def _parse_vcard(self, vcard_text: str) -> Dict:
         """Parsea un vCard individual y extrae todos los campos"""
         contact = {
-            'fn': '',
-            'family_name': '',
-            'given_name': '',
-            'middle_name': '',
-            'phones': [],
-            'emails': [],
-            'notes': '',
-            'org': '',
-            'addresses': [],
-            'photo': ''
+            'fn': '', 'family_name': '', 'given_name': '', 'middle_name': '',
+            'phones': [], 'emails': [], 'notes': '', 'org': '', 'addresses': [], 'photo': ''
         }
-
-        # Eliminar BEGIN:VCARD si existe
-        vcard_text = vcard_text.replace('BEGIN:VCARD', '')
-
-        # Unir líneas continuadas (que empiezan con espacio o tab)
-        vcard_text = re.sub(r'\r?\n[ \t]', '', vcard_text)
 
         lines = vcard_text.strip().split('\n')
 
@@ -70,75 +71,41 @@ class VCardParser:
             if not line or ':' not in line:
                 continue
 
-            # Separar campo y valor
             field_part, _, value = line.partition(':')
-
-            # El campo puede tener parámetros como TEL;TYPE=CELL
             field_parts = field_part.split(';')
             field = field_parts[0].upper()
-            params = field_parts[1:] if len(field_parts) > 1 else []
+            params = field_parts[1:]
 
-            # Extraer tipo (TYPE=CELL, TYPE=HOME, etc.)
-            field_type = self._extract_type(params)
+            decoded_value = self._decode_value(value, params)
 
-            # Procesar según el campo
             if field == 'FN':
-                contact['fn'] = self._decode_value(value)
-
+                contact['fn'] = decoded_value
             elif field == 'N':
-                # Formato: Apellido;Nombre;Segundo nombre;Prefijo;Sufijo
-                parts = value.split(';')
-                contact['family_name'] = self._decode_value(parts[0] if len(parts) > 0 else '')
-                contact['given_name'] = self._decode_value(parts[1] if len(parts) > 1 else '')
-                contact['middle_name'] = self._decode_value(parts[2] if len(parts) > 2 else '')
-
+                parts = decoded_value.split(';')
+                contact['family_name'] = parts[0] if len(parts) > 0 else ''
+                contact['given_name'] = parts[1] if len(parts) > 1 else ''
+                contact['middle_name'] = parts[2] if len(parts) > 2 else ''
             elif field == 'TEL':
-                phone = self._clean_phone(value)
+                phone = self._clean_phone(decoded_value)
                 if phone:
-                    contact['phones'].append({
-                        'number': phone,
-                        'type': field_type
-                    })
-
+                    contact['phones'].append({'number': phone, 'type': self._extract_type(params)})
             elif field == 'EMAIL':
-                email = self._decode_value(value).strip()
-                if email and '@' in email:
-                    contact['emails'].append({
-                        'address': email,
-                        'type': field_type
-                    })
-
+                if '@' in decoded_value:
+                    contact['emails'].append({'address': decoded_value, 'type': self._extract_type(params)})
             elif field == 'NOTE':
-                note_text = self._decode_value(value)
-                if contact['notes']:
-                    contact['notes'] += ' | ' + note_text
-                else:
-                    contact['notes'] = note_text
-
+                contact['notes'] = (contact['notes'] + ' | ' + decoded_value) if contact['notes'] else decoded_value
             elif field == 'ORG':
-                org = self._decode_value(value)
-                contact['org'] = org
-
+                contact['org'] = decoded_value
             elif field == 'ADR':
-                # Formato: POBox;Ext;Calle;Ciudad;Estado;CP;País
-                addr = self._decode_value(value)
+                addr = decoded_value.replace(';', ', ')
                 if addr:
-                    contact['addresses'].append({
-                        'address': addr.replace(';', ', '),
-                        'type': field_type
-                    })
-
+                    contact['addresses'].append({'address': addr, 'type': self._extract_type(params)})
             elif field == 'PHOTO':
-                # Guardar URL o referencia a foto
-                contact['photo'] = value[:100]  # Limitar tamaño
+                contact['photo'] = value[:100]
 
-        # Normalizar nombre completo
         contact['fn'] = self._normalize_full_name(contact)
-
-        # Solo devolver si tiene al menos nombre o teléfono
         if contact['fn'] or contact['phones']:
             return contact
-
         return None
 
     def _extract_type(self, params: List[str]) -> str:
@@ -150,52 +117,23 @@ class VCardParser:
                 return param.capitalize()
         return 'Other'
 
-    def _decode_value(self, value: str) -> str:
-        """Decodifica valores que pueden estar en QUOTED-PRINTABLE o con escapes"""
-        # Remover comillas si existen
-        value = value.strip('"')
-
-        # Decodificar QUOTED-PRINTABLE
-        if '=' in value and re.search(r'=[0-9A-F]{2}', value):
-            try:
-                # Simple decodificación de quoted-printable
-                value = re.sub(r'=([0-9A-F]{2})', lambda m: chr(int(m.group(1), 16)), value)
-            except:
-                pass
-
-        # Decodificar escapes comunes
-        value = value.replace('\\n', '\n').replace('\\,', ',').replace('\\;', ';')
-
-        return value.strip()
-
     def _clean_phone(self, phone: str) -> str:
         """Limpia y normaliza un número de teléfono"""
-        # Remover espacios, guiones, paréntesis
         phone = re.sub(r'[^\d+]', '', phone)
         return phone if phone else None
 
     def _normalize_full_name(self, contact: Dict) -> str:
         """Normaliza el nombre completo del contacto"""
-        # Si ya existe FN, usarlo
         if contact['fn']:
             return contact['fn']
-
-        # Construir desde N
         parts = []
-        if contact['given_name']:
-            parts.append(contact['given_name'])
-        if contact['middle_name']:
-            parts.append(contact['middle_name'])
-        if contact['family_name']:
-            parts.append(contact['family_name'])
-
+        if contact['given_name']: parts.append(contact['given_name'])
+        if contact['middle_name']: parts.append(contact['middle_name'])
+        if contact['family_name']: parts.append(contact['family_name'])
         if parts:
             return ' '.join(parts)
-
-        # Si no hay nombre, usar el primer teléfono
         if contact['phones']:
             return f"Contacto {contact['phones'][0]['number']}"
-
         return "Sin nombre"
 
 
@@ -334,67 +272,52 @@ class GoogleContactsCSV:
     def __init__(self, contacts: List[Dict], output_file: str):
         self.contacts = contacts
         self.output_file = output_file
+        # Encabezados EXACTOS proporcionados por el usuario
+        self.headers = [
+            'First Name', 'Middle Name', 'Last Name', 'Phonetic First Name',
+            'Phonetic Middle Name', 'Phonetic Last Name', 'Name Prefix', 'Name Suffix',
+            'Nickname', 'File As', 'Organization Name', 'Organization Title',
+            'Organization Department', 'Birthday', 'Notes', 'Photo', 'Labels',
+            'E-mail 1 - Label', 'E-mail 1 - Value', 'Phone 1 - Label', 'Phone 1 - Value',
+            'Phone 2 - Label', 'Phone 2 - Value', 'Phone 3 - Label', 'Phone 3 - Value',
+            'Address 1 - Label', 'Address 1 - Formatted', 'Address 1 - Street',
+            'Address 1 - City', 'Address 1 - PO Box', 'Address 1 - Region',
+            'Address 1 - Postal Code', 'Address 1 - Country', 'Address 1 - Extended Address',
+            'Custom Field 1 - Label', 'Custom Field 1 - Value'
+        ]
 
     def generate(self):
         """Genera el archivo CSV"""
-        # Determinar número máximo de teléfonos y emails
-        max_phones = max((len(c['phones']) for c in self.contacts), default=0)
-        max_emails = max((len(c['emails']) for c in self.contacts), default=0)
-
-        # Limitar a un máximo razonable
-        max_phones = min(max_phones, 5)
-        max_emails = min(max_emails, 5)
-
-        # Construir encabezados
-        headers = [
-            'Name',
-            'Given Name',
-            'Family Name',
-        ]
-
-        # Agregar columnas de teléfonos
-        for i in range(1, max_phones + 1):
-            headers.append(f'Phone {i} - Type')
-            headers.append(f'Phone {i} - Value')
-
-        # Agregar columnas de emails
-        for i in range(1, max_emails + 1):
-            headers.append(f'E-mail {i} - Type')
-            headers.append(f'E-mail {i} - Value')
-
-        headers.extend([
-            'Organization 1 - Name',
-            'Address 1 - Formatted',
-            'Notes'
-        ])
-
-        # Escribir CSV
-        with open(self.output_file, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=headers)
+        with open(self.output_file, 'w', newline='', encoding='utf-8-sig') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=self.headers)
             writer.writeheader()
 
             for contact in self.contacts:
+                # Mapeo a las nuevas columnas
                 row = {
-                    'Name': contact['fn'],
-                    'Given Name': contact['given_name'],
-                    'Family Name': contact['family_name'],
-                    'Organization 1 - Name': contact['org'],
-                    'Notes': contact['notes']
+                    'First Name': contact.get('given_name', ''),
+                    'Middle Name': contact.get('middle_name', ''),
+                    'Last Name': contact.get('family_name', ''),
+                    'Organization Name': contact.get('org', ''),
+                    'Notes': contact.get('notes', ''),
+                    'Photo': contact.get('photo', '')
                 }
 
-                # Agregar teléfonos
-                for i, phone in enumerate(contact['phones'][:max_phones], 1):
-                    row[f'Phone {i} - Type'] = phone['type']
-                    row[f'Phone {i} - Value'] = phone['number']
+                # Mapear hasta 3 teléfonos
+                for i, phone in enumerate(contact.get('phones', [])[:3], 1):
+                    row[f'Phone {i} - Label'] = phone.get('type', 'Other')
+                    row[f'Phone {i} - Value'] = phone.get('number', '')
 
-                # Agregar emails
-                for i, email in enumerate(contact['emails'][:max_emails], 1):
-                    row[f'E-mail {i} - Type'] = email['type']
-                    row[f'E-mail {i} - Value'] = email['address']
+                # Mapear hasta 1 email (se puede extender si es necesario)
+                for i, email in enumerate(contact.get('emails', [])[:1], 1):
+                    row[f'E-mail {i} - Label'] = email.get('type', 'Other')
+                    row[f'E-mail {i} - Value'] = email.get('address', '')
 
-                # Agregar primera dirección
-                if contact['addresses']:
-                    row['Address 1 - Formatted'] = contact['addresses'][0]['address']
+                # Mapear primera dirección
+                if contact.get('addresses'):
+                    address = contact['addresses'][0]
+                    row['Address 1 - Label'] = address.get('type', 'Home')
+                    row['Address 1 - Formatted'] = address.get('address', '')
 
                 writer.writerow(row)
 
