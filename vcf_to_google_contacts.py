@@ -6,27 +6,61 @@ Maneja duplicados, normaliza nombres y unifica múltiples contactos.
 """
 
 import csv
+import os
 import re
 import sys
 from collections import defaultdict
-from typing import Dict, List, Set
+from pathlib import Path
+from typing import Dict, List, Optional, Set
 
 
 class VCardParser:
-    """Parser para archivos vCard (.vcf)"""
+    """Parser para archivos vCard (.vcf).
+    
+    Procesa archivos en formato vCard (RFC 6350) y extrae información de contactos.
+    Soporta encoding QUOTED-PRINTABLE y líneas continuadas.
+    """
 
-    def __init__(self, vcf_file: str):
+    def __init__(self, vcf_file: str) -> None:
+        """Inicializa el parser.
+        
+        Args:
+            vcf_file: Ruta al archivo vCard (.vcf)
+        """
         self.vcf_file = vcf_file
-        self.contacts = []
+        self.contacts: List[Dict] = []
 
     def parse(self) -> List[Dict]:
-        """Lee y parsea el archivo .vcf completo"""
+        """Lee y parsea el archivo .vcf completo.
+        
+        Returns:
+            Lista de diccionarios con información de contactos.
+            
+        Raises:
+            FileNotFoundError: Si el archivo no existe.
+            PermissionError: Si no hay permisos de lectura.
+            ValueError: Si el archivo está vacío.
+        """
+        # Validación del archivo
+        vcf_path = Path(self.vcf_file)
+        
+        if not vcf_path.exists():
+            raise FileNotFoundError(f"Archivo no encontrado: {self.vcf_file}")
+        
+        if not vcf_path.is_file():
+            raise ValueError(f"La ruta no es un archivo: {self.vcf_file}")
+        
+        if not os.access(self.vcf_file, os.R_OK):
+            raise PermissionError(f"Permiso denegado al leer: {self.vcf_file}")
+        
+        if vcf_path.stat().st_size == 0:
+            raise ValueError(f"El archivo está vacío: {self.vcf_file}")
+        
         try:
             with open(self.vcf_file, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
         except Exception as e:
-            print(f"Error crítico al leer el archivo: {e}")
-            return []
+            raise RuntimeError(f"Error crítico al leer el archivo: {e}")
 
         # Unir líneas continuadas que empiezan con espacio o tab en todo el archivo
         content = re.sub(r'\r?\n[ \t]', '', content)
@@ -45,7 +79,15 @@ class VCardParser:
         return self.contacts
 
     def _decode_value(self, value: str, params: List[str]) -> str:
-        """Decodifica un valor si está marcado como QUOTED-PRINTABLE."""
+        """Decodifica un valor si está marcado como QUOTED-PRINTABLE.
+        
+        Args:
+            value: Valor a decodificar.
+            params: Parámetros del campo vCard.
+            
+        Returns:
+            Valor decodificado.
+        """
         is_quoted = any('ENCODING=QUOTED-PRINTABLE' in p.upper() for p in params)
 
         if is_quoted:
@@ -57,8 +99,15 @@ class VCardParser:
 
         return value.replace('\\n', '\n').replace('\\,', ',').replace('\\;', ';').strip()
 
-    def _parse_vcard(self, vcard_text: str) -> Dict:
-        """Parsea un vCard individual y extrae todos los campos"""
+    def _parse_vcard(self, vcard_text: str) -> Optional[Dict]:
+        """Parsea un vCard individual y extrae todos los campos.
+        
+        Args:
+            vcard_text: Texto del vCard a parsear.
+            
+        Returns:
+            Diccionario con datos del contacto o None si está vacío.
+        """
         contact = {
             'fn': '', 'family_name': '', 'given_name': '', 'middle_name': '',
             'phones': [], 'emails': [], 'notes': '', 'org': '', 'addresses': [], 'photo': ''
@@ -109,7 +158,14 @@ class VCardParser:
         return None
 
     def _extract_type(self, params: List[str]) -> str:
-        """Extrae el tipo de un campo (CELL, HOME, WORK, etc.)"""
+        """Extrae el tipo de un campo (CELL, HOME, WORK, etc.).
+        
+        Args:
+            params: Parámetros del campo vCard.
+            
+        Returns:
+            Tipo del campo capitalizado (ej: 'Cell', 'Home', 'Work').
+        """
         for param in params:
             if param.upper().startswith('TYPE='):
                 return param.split('=')[1].capitalize()
@@ -117,13 +173,27 @@ class VCardParser:
                 return param.capitalize()
         return 'Other'
 
-    def _clean_phone(self, phone: str) -> str:
-        """Limpia y normaliza un número de teléfono"""
+    def _clean_phone(self, phone: str) -> Optional[str]:
+        """Limpia y normaliza un número de teléfono.
+        
+        Args:
+            phone: Número de teléfono a limpiar.
+            
+        Returns:
+            Teléfono limpio o None si está vacío.
+        """
         phone = re.sub(r'[^\d+]', '', phone)
         return phone if phone else None
 
     def _normalize_full_name(self, contact: Dict) -> str:
-        """Normaliza el nombre completo del contacto"""
+        """Normaliza el nombre completo del contacto.
+        
+        Args:
+            contact: Diccionario con datos del contacto.
+            
+        Returns:
+            Nombre completo normalizado.
+        """
         if contact['fn']:
             return contact['fn']
         parts = []
@@ -138,13 +208,28 @@ class VCardParser:
 
 
 class ContactMerger:
-    """Unifica contactos duplicados basándose en nombre o teléfono"""
+    """Unifica contactos duplicados basándose en nombre o teléfono.
+    
+    Detecta y fusiona contactos duplicados usando nombre y teléfono como criterios.
+    Mantiene la información más completa de cada grupo de duplicados.
+    """
 
-    def __init__(self, contacts: List[Dict]):
+    def __init__(self, contacts: List[Dict]) -> None:
+        """Inicializa el unificador.
+        
+        Args:
+            contacts: Lista de contactos a procesar.
+        """
         self.contacts = contacts
 
     def merge_duplicates(self) -> List[Dict]:
-        """Fusiona contactos duplicados"""
+        """Fusiona contactos duplicados.
+        
+        Detecta duplicados usando nombre y números de teléfono como criterios.
+        
+        Returns:
+            Lista de contactos sin duplicados.
+        """
         # Índices por teléfono y por nombre
         phone_index: Dict[str, List[int]] = defaultdict(list)
         name_index: Dict[str, List[int]] = defaultdict(list)
@@ -201,7 +286,17 @@ class ContactMerger:
         return merged_contacts
 
     def _merge_group(self, group: List[Dict]) -> Dict:
-        """Fusiona un grupo de contactos en uno solo"""
+        """Fusiona un grupo de contactos en uno solo.
+        
+        Combina la información de múltiples contactos, eligiendo los datos
+        más completos y eliminando duplicados de teléfono y email.
+        
+        Args:
+            group: Lista de contactos a fusionar.
+            
+        Returns:
+            Contacto único con información combinada.
+        """
         merged = {
             'fn': '',
             'family_name': '',
@@ -267,9 +362,19 @@ class ContactMerger:
 
 
 class GoogleContactsCSV:
-    """Genera CSV compatible con Google Contacts"""
+    """Genera CSV compatible con Google Contacts.
+    
+    Convierte una lista de contactos a formato CSV que puede importarse
+    directamente en Google Contacts.
+    """
 
-    def __init__(self, contacts: List[Dict], output_file: str):
+    def __init__(self, contacts: List[Dict], output_file: str) -> None:
+        """Inicializa el generador CSV.
+        
+        Args:
+            contacts: Lista de contactos a exportar.
+            output_file: Ruta del archivo CSV de salida.
+        """
         self.contacts = contacts
         self.output_file = output_file
         # Encabezados EXACTOS proporcionados por el usuario
@@ -286,13 +391,28 @@ class GoogleContactsCSV:
             'Custom Field 1 - Label', 'Custom Field 1 - Value'
         ]
 
-    def generate(self):
-        """Genera el archivo CSV"""
-        with open(self.output_file, 'w', newline='', encoding='utf-8-sig') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=self.headers)
-            writer.writeheader()
+    def generate(self) -> None:
+        """Genera el archivo CSV.
+        
+        Escribe los contactos en formato CSV compatible con Google Contacts.
+        
+        Raises:
+            IOError: Si no se puede escribir el archivo de salida.
+            ValueError: Si no hay contactos para exportar.
+        """
+        if not self.contacts:
+            raise ValueError("No hay contactos para exportar")
+        
+        try:
+            # Validar que el directorio de salida existe
+            output_path = Path(self.output_file)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(self.output_file, 'w', newline='', encoding='utf-8-sig') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=self.headers)
+                writer.writeheader()
 
-            for contact in self.contacts:
+                for contact in self.contacts:
                 # Mapeo a las nuevas columnas
                 row = {
                     'First Name': contact.get('given_name', ''),
@@ -319,13 +439,20 @@ class GoogleContactsCSV:
                     row['Address 1 - Label'] = address.get('type', 'Home')
                     row['Address 1 - Formatted'] = address.get('address', '')
 
-                writer.writerow(row)
+                    writer.writerow(row)
+        except IOError as e:
+            raise IOError(f"Error al escribir el archivo CSV: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Error inesperado al generar CSV: {e}")
 
-        print(f"✓ CSV generado exitosamente: {self.output_file}")
+        print(f"CSV generado exitosamente: {self.output_file}")
 
 
-def main():
-    """Función principal"""
+def main() -> None:
+    """Función principal.
+    
+    Orquesta el flujo de conversión: parseo, unificación y generación de CSV.
+    """
     print("=" * 70)
     print("Conversor de vCard (.vcf) a Google Contacts CSV")
     print("=" * 70)
@@ -342,42 +469,65 @@ def main():
     else:
         output_file = 'salida.csv'
 
-    print(f"\n📂 Archivo de entrada: {input_file}")
-    print(f"📄 Archivo de salida: {output_file}\n")
+    print(f"\nArchivo de entrada: {input_file}")
+    print(f"Archivo de salida: {output_file}\n")
 
     # 1. Parsear el archivo VCF
-    print("⏳ Paso 1/3: Parseando archivo .vcf...")
-    parser = VCardParser(input_file)
-    contacts = parser.parse()
-    print(f"   ✓ {len(contacts)} contactos extraídos")
+    print("Paso 1/3: Parseando archivo .vcf...")
+    try:
+        parser = VCardParser(input_file)
+        contacts = parser.parse()
+        print(f"[OK] {len(contacts)} contactos extraídos")
+    except FileNotFoundError as e:
+        print(f"[ERROR] {e}")
+        sys.exit(1)
+    except PermissionError as e:
+        print(f"[ERROR] {e}")
+        sys.exit(1)
+    except ValueError as e:
+        print(f"[ERROR] {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"[ERROR] Error al procesar archivo: {e}")
+        sys.exit(1)
 
     # 2. Fusionar duplicados
-    print("\n⏳ Paso 2/3: Fusionando contactos duplicados...")
+    print("\nPaso 2/3: Fusionando contactos duplicados...")
     merger = ContactMerger(contacts)
     merged_contacts = merger.merge_duplicates()
     duplicates_removed = len(contacts) - len(merged_contacts)
-    print(f"   ✓ {duplicates_removed} duplicados fusionados")
-    print(f"   ✓ {len(merged_contacts)} contactos únicos")
+    print(f"[OK] {duplicates_removed} duplicados fusionados")
+    print(f"[OK] {len(merged_contacts)} contactos únicos")
 
     # 3. Generar CSV
-    print("\n⏳ Paso 3/3: Generando CSV compatible con Google Contacts...")
-    csv_generator = GoogleContactsCSV(merged_contacts, output_file)
-    csv_generator.generate()
+    print("\nPaso 3/3: Generando CSV compatible con Google Contacts...")
+    try:
+        csv_generator = GoogleContactsCSV(merged_contacts, output_file)
+        csv_generator.generate()
+    except ValueError as e:
+        print(f"[ERROR] {e}")
+        sys.exit(1)
+    except IOError as e:
+        print(f"[ERROR] {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"[ERROR] Error al generar CSV: {e}")
+        sys.exit(1)
 
     # Estadísticas finales
     print("\n" + "=" * 70)
-    print("📊 ESTADÍSTICAS:")
-    print(f"   • Contactos procesados: {len(contacts)}")
-    print(f"   • Duplicados fusionados: {duplicates_removed}")
-    print(f"   • Contactos en CSV final: {len(merged_contacts)}")
+    print("ESTADISTICAS:")
+    print(f"   - Contactos procesados: {len(contacts)}")
+    print(f"   - Duplicados fusionados: {duplicates_removed}")
+    print(f"   - Contactos en CSV final: {len(merged_contacts)}")
 
     total_phones = sum(len(c['phones']) for c in merged_contacts)
     total_emails = sum(len(c['emails']) for c in merged_contacts)
-    print(f"   • Total teléfonos: {total_phones}")
-    print(f"   • Total emails: {total_emails}")
+    print(f"   - Total telefonos: {total_phones}")
+    print(f"   - Total emails: {total_emails}")
 
-    print("\n✅ ¡Proceso completado exitosamente!")
-    print(f"   Puedes importar {output_file} directamente en Google Contacts")
+    print("\nProceso completado exitosamente!")
+    print(f"Puedes importar {output_file} directamente en Google Contacts")
     print("=" * 70)
 
 
