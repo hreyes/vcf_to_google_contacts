@@ -413,31 +413,31 @@ class GoogleContactsCSV:
                 writer.writeheader()
 
                 for contact in self.contacts:
-                # Mapeo a las nuevas columnas
-                row = {
-                    'First Name': contact.get('given_name', ''),
-                    'Middle Name': contact.get('middle_name', ''),
-                    'Last Name': contact.get('family_name', ''),
-                    'Organization Name': contact.get('org', ''),
-                    'Notes': contact.get('notes', ''),
-                    'Photo': contact.get('photo', '')
-                }
+                    # Mapeo a las nuevas columnas
+                    row = {
+                        'First Name': contact.get('given_name', ''),
+                        'Middle Name': contact.get('middle_name', ''),
+                        'Last Name': contact.get('family_name', ''),
+                        'Organization Name': contact.get('org', ''),
+                        'Notes': contact.get('notes', ''),
+                        'Photo': contact.get('photo', '')
+                    }
 
-                # Mapear hasta 3 teléfonos
-                for i, phone in enumerate(contact.get('phones', [])[:3], 1):
-                    row[f'Phone {i} - Label'] = phone.get('type', 'Other')
-                    row[f'Phone {i} - Value'] = phone.get('number', '')
+                    # Mapear hasta 3 teléfonos
+                    for i, phone in enumerate(contact.get('phones', [])[:3], 1):
+                        row[f'Phone {i} - Label'] = phone.get('type', 'Other')
+                        row[f'Phone {i} - Value'] = phone.get('number', '')
 
-                # Mapear hasta 1 email (se puede extender si es necesario)
-                for i, email in enumerate(contact.get('emails', [])[:1], 1):
-                    row[f'E-mail {i} - Label'] = email.get('type', 'Other')
-                    row[f'E-mail {i} - Value'] = email.get('address', '')
+                    # Mapear hasta 1 email (se puede extender si es necesario)
+                    for i, email in enumerate(contact.get('emails', [])[:1], 1):
+                        row[f'E-mail {i} - Label'] = email.get('type', 'Other')
+                        row[f'E-mail {i} - Value'] = email.get('address', '')
 
-                # Mapear primera dirección
-                if contact.get('addresses'):
-                    address = contact['addresses'][0]
-                    row['Address 1 - Label'] = address.get('type', 'Home')
-                    row['Address 1 - Formatted'] = address.get('address', '')
+                    # Mapear primera dirección
+                    if contact.get('addresses'):
+                        address = contact['addresses'][0]
+                        row['Address 1 - Label'] = address.get('type', 'Home')
+                        row['Address 1 - Formatted'] = address.get('address', '')
 
                     writer.writerow(row)
         except IOError as e:
